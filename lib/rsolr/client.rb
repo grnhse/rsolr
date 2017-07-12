@@ -101,7 +101,12 @@ class RSolr::Client
   #
   def add doc, opts = {}
     add_attributes = opts.delete :add_attributes
-    update opts.merge(:data => xml.add(doc, add_attributes))
+
+    ActiveSupport::Notifications.instrument("request.rsolr_xml_add", opts) do
+      xml_data = xml.add(doc, add_attributes)
+    end
+
+    update opts.merge(:data => xml_data)
   end
 
   # send "commit" xml with opts
