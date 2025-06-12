@@ -1,6 +1,19 @@
+require 'json'
+
 module RSolr::Error
 
+  module URICleanup
+    # Removes username and password from URI object.
+    def clean_uri(uri)
+      uri = uri.dup
+      uri.password = "REDACTED" if uri.password
+      uri.user = "REDACTED" if uri.user
+      uri
+    end
+  end
+
   module SolrContext
+    include URICleanup
 
     attr_accessor :request, :response
 
@@ -11,7 +24,7 @@ module RSolr::Error
         details = parse_solr_error_response response[:body]
         m << "\nError: #{details}\n" if details
       end
-      p = "\nURI: #{request[:uri].to_s}"
+      p = "\nURI: #{clean_uri(request[:uri]).to_s}"
       p << "\nRequest Headers: #{request[:headers].inspect}" if request[:headers]
       p << "\nRequest Data: #{request[:data].inspect}" if request[:data]
       p << "\n"
@@ -24,6 +37,18 @@ module RSolr::Error
 
     def parse_solr_error_response body
       begin
+        # Default JSON response, try to parse and retrieve error message
+        if response[:headers] && response[:headers]["content-type"].start_with?("application/json")
+          begin
+            parsed_body = JSON.parse(body)
+            info = parsed_body && parsed_body["error"] && parsed_body["error"]["msg"]
+          rescue JSON::ParserError
+          end
+        end
+        return info if info
+
+        # legacy analysis, I think trying to handle wt=ruby responses without
+        # a full parse?
         if body =~ /<pre>/
           info = body.scan(/<pre>(.*)<\/pre>/mi)[0]
         elsif body =~ /'msg'=>/
@@ -38,11 +63,16 @@ module RSolr::Error
         nil
       end
     end
-
-
   end
 
   class ConnectionRefused < ::Errno::ECONNREFUSED
+    include URICleanup
+
+    def initialize(request)
+      request[:uri] = clean_uri(request[:uri])
+
+      super(request.inspect)
+    end
   end
 
   class Http < RuntimeError
@@ -110,15 +140,31 @@ module RSolr::Error
     }
 
     def initialize request, response
+      response = response_with_force_encoded_body(response)
       @request, @response = request, response
     end
 
+    private
+
+    def response_with_force_encoded_body(response)
+      response[:body] = response[:body].force_encoding('UTF-8') if response
+      response
+    end
   end
 
   # Thrown if the :wt is :ruby
   # but the body wasn't succesfully parsed/evaluated
   class InvalidResponse < Http
 
+  end
+
+  # Subclasses Rsolr::Error::Http for legacy backwards compatibility
+  # purposes, because earlier RSolr 2 didn't distinguish these
+  # from Http errors.
+  #
+  # In RSolr 3, it could make sense to `< Timeout::Error` instead,
+  # analagous to ConnectionRefused above
+  class Timeout < Http
   end
 
   # Thrown if the :wt is :ruby
